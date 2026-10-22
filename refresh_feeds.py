@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Build a browser-ready snapshot of the configured public RSS feeds."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html import unescape
 from html.parser import HTMLParser
 import json
 from pathlib import Path
 import re
+from urllib.parse import urlencode
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -24,8 +25,9 @@ FEEDS = [
     ("Cisco Talos Intelligence", "https://blog.talosintelligence.com/rss/", "attacks"),
     ("Google Online Security Blog", "https://security.googleblog.com/feeds/posts/default", "vulnerabilities"),
     ("Microsoft Security Blog", "https://www.microsoft.com/en-us/security/blog/feed/", "news"),
-    ("Microsoft Learn Blog", "https://techcommunity.microsoft.com/t5/s/gxcuf89792/rss/board?board.id=MicrosoftLearnBlog", "news"),
-    ("NVD CVE feed", "https://nvd.nist.gov/feeds/xml/cve/misc/nvd-rss.xml", "vulnerabilities"),
+    ("Microsoft Learn Blog", "https://techcommunity.microsoft.com/gxcuf89792/rss/board?board.id=MicrosoftLearnBlog", "news"),
+    ("Microsoft Tech Community Blogs", "https://techcommunity.microsoft.com/gxcuf89792/rss/Community?interaction.style=blog&feeds.replies=true", "news"),
+    ("NVD CVE feed", "https://services.nvd.nist.gov/rest/json/cves/2.0", "vulnerabilities"),
     ("Dark Reading", "https://www.darkreading.com/rss.xml", "news"),
     ("Schneier on Security", "https://www.schneier.com/feed/atom/", "news"),
 ]
@@ -91,6 +93,8 @@ def parse_date(value):
 
 
 def fetch_feed(name, url, category):
+    if name == "NVD CVE feed":
+        return fetch_nvd(url)
     request = urllib.request.Request(url, headers={"User-Agent": "SignalSecurityFeed/1.0 (+GitHub Actions RSS reader)", "Accept": "application/atom+xml, application/rss+xml, application/xml, text/xml, */*"})
     with urllib.request.urlopen(request, timeout=20) as response:
         root = ET.fromstring(response.read())
@@ -123,6 +127,50 @@ def fetch_feed(name, url, category):
         })
         if len(rows) >= 12:
             break
+    return rows
+
+
+def fetch_nvd(url):
+    now = datetime.now(timezone.utc)
+    params = urlencode({
+        "lastModStartDate": (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%S.000"),
+        "lastModEndDate": now.strftime("%Y-%m-%dT%H:%M:%S.000"),
+        "resultsPerPage": 12,
+    })
+    request = urllib.request.Request(f"{url}?{params}", headers={"User-Agent": "SignalSecurityFeed/1.0 (+GitHub Actions NVD reader)", "Accept": "application/json"})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        payload = json.loads(response.read())
+
+    rows = []
+    for record in payload.get("vulnerabilities", []):
+        cve = record.get("cve", {})
+        cve_id = cve.get("id")
+        if not cve_id:
+            continue
+        description = next((d.get("value", "") for d in cve.get("descriptions", []) if d.get("lang") == "en"), "")
+        published = parse_date(cve.get("published"))
+        metrics = cve.get("metrics", {})
+        severity = "medium"
+        for key in ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+            values = metrics.get(key, [])
+            if values:
+                label = values[0].get("cvssData", {}).get("baseSeverity") or values[0].get("baseSeverity")
+                if label:
+                    severity = label.lower()
+                break
+        rows.append({
+            "id": cve_id,
+            "source": "NVD CVE feed",
+            "category": "vulnerabilities",
+            "severity": severity,
+            "time": published.strftime("%b %d, %Y") if published else "Recent",
+            "title": f"{cve_id}: {clean_html(description)[:150]}" if description else cve_id,
+            "desc": clean_html(description)[:230] or "Open the NVD record for details.",
+            "tags": ["Vulnerabilities"],
+            "age": max(0, (now - published).days) if published else 0,
+            "publishedAt": published.isoformat() if published else None,
+            "url": f"https://nvd.nist.gov/vuln/detail/{cve_id}",
+        })
     return rows
 
 
