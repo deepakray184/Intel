@@ -177,13 +177,33 @@ def fetch_nvd(url):
 def main():
     articles = []
     successful = []
+    feed_health = []
     for name, url, category in FEEDS:
+        checked_at = datetime.now(timezone.utc).isoformat()
         try:
             items = fetch_feed(name, url, category)
             articles.extend(items)
             successful.append({"name": name, "url": url, "category": category})
+            feed_health.append({
+                "name": name,
+                "url": url,
+                "category": category,
+                "status": "ok",
+                "checkedAt": checked_at,
+                "itemCount": len(items),
+                "error": "",
+            })
             print(f"Loaded {len(items)} items from {name}")
         except (urllib.error.URLError, TimeoutError, ET.ParseError, OSError, ValueError) as error:
+            feed_health.append({
+                "name": name,
+                "url": url,
+                "category": category,
+                "status": "error",
+                "checkedAt": checked_at,
+                "itemCount": 0,
+                "error": str(error)[:180],
+            })
             print(f"Skipped {name}: {error}")
 
     deduped = {}
@@ -192,6 +212,7 @@ def main():
     snapshot = {
         "updatedAt": datetime.now(timezone.utc).isoformat(),
         "sources": successful,
+        "feedHealth": feed_health,
         "advisories": list(deduped.values())[:150],
     }
     output = "window.FEED_DATA = " + json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")) + ";\n"
