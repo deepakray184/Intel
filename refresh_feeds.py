@@ -25,8 +25,6 @@ FEEDS = [
     ("Cisco Talos Intelligence", "https://blog.talosintelligence.com/rss/", "attacks"),
     ("Google Online Security Blog", "https://security.googleblog.com/feeds/posts/default", "vulnerabilities"),
     ("Microsoft Security Blog", "https://www.microsoft.com/en-us/security/blog/feed/", "news"),
-    ("Microsoft Learn Blog", "https://techcommunity.microsoft.com/gxcuf89792/rss/board?board.id=MicrosoftLearnBlog", "news"),
-    ("Microsoft Tech Community Blogs", "https://techcommunity.microsoft.com/gxcuf89792/rss/Community?interaction.style=blog&feeds.replies=true", "news"),
     ("NVD CVE feed", "https://services.nvd.nist.gov/rest/json/cves/2.0", "vulnerabilities"),
     ("Dark Reading", "https://www.darkreading.com/rss.xml", "news"),
     ("Schneier on Security", "https://www.schneier.com/feed/atom/", "news"),
@@ -209,11 +207,18 @@ def main():
     deduped = {}
     for article in articles:
         deduped.setdefault(article["url"] or article["id"], article)
+    # Merge feeds in publication order so items from later entries in FEEDS do
+    # not get dropped when the snapshot is capped at 150 advisories.
+    advisories = list(deduped.values())
+    advisories.sort(
+        key=lambda article: parse_date(article.get("publishedAt")) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
     snapshot = {
         "updatedAt": datetime.now(timezone.utc).isoformat(),
         "sources": successful,
         "feedHealth": feed_health,
-        "advisories": list(deduped.values())[:150],
+        "advisories": advisories[:150],
     }
     output = "window.FEED_DATA = " + json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")) + ";\n"
     Path("feed-data.js").write_text(output, encoding="utf-8")
